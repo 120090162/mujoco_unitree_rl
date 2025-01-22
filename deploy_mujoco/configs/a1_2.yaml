@@ -6,6 +6,7 @@ framework: "isaacgym"
 simulation_duration: 60.0
 # Simulation time step
 simulation_dt: 0.005
+viewer_dt: 0.02  # 50 fps for viewer
 # Controller update frequency (meets the requirement of simulation_dt * controll_decimation=0.02; 50Hz)
 control_decimation: 4
 rows: 4
@@ -27,10 +28,10 @@ rl_kp: [20, 20, 20,
         20, 20, 20,
         20, 20, 20,
         20, 20, 20]
-rl_kd: [3, 3, 3,
-            3, 3, 3,
-            3, 3, 3,
-            3, 3, 3]
+rl_kd: [0.5, 0.5, 0.5,
+        0.5, 0.5, 0.5,
+        0.5, 0.5, 0.5,
+        0.5, 0.5, 0.5]
 
 fixed_kp: [80, 80, 80,
             80, 80, 80,
@@ -61,4 +62,4 @@ joint_controller_names: ["FL_hip_controller", "FL_thigh_controller", "FL_calf_co
                           "FR_hip_controller", "FR_thigh_controller", "FR_calf_controller",
                           "RL_hip_controller", "RL_thigh_controller", "RL_calf_controller",
                           "RR_hip_controller", "RR_thigh_controller", "RR_calf_controller"]
-cmd_init: [1, 0, 0]
+cmd_init: [0, 0, 0]

@@ -11,4 +11,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config_file = args.config_file
     rl_sim = RL_Sim(config_file=config_file)
-    rl_sim.main_loop()

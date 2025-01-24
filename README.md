@@ -1,5 +1,5 @@
 # mujoco_unitree_rl
-combine `rl_sar` and `unitree_mujoco` repoes, you need to change the `LEGGED_GYM_ROOT_DIR` value to your path in file `rl_sdk.py` .
+combine `rl_sar` and `unitree_mujoco` repo, you need to change the `LEGGED_GYM_ROOT_DIR` value to your path in file `rl_sdk.py`.
 
 example code
 ```bash
@@ -19,4 +19,5 @@ R : 重置模型
 ```
 
 运行示例
-![Uploading screenshot.png…]()
+
+![screenshot](https://github.com/user-attachments/assets/2a03167c-a71e-4b63-84c3-6b3082c06f01)

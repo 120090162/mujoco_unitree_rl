@@ -1,3 +1,4 @@
+import mujoco.glfw
 import torch
 from rl_sdk import *
 from observation_buffer import *
@@ -5,6 +6,8 @@ from observation_buffer import *
 import mujoco.viewer
 import mujoco
 import time
+from threading import Thread
+import threading
 
 CSV_LOGGER = False
 MOTOR_SENSOR_NUM = 3
@@ -15,7 +18,7 @@ class RL_Sim(RL):
         super().__init__()
 
         # member variables for RL_Sim
-        self.cmd_vel = [0, 0, 0]
+        # self.cmd_vel = [0, 0, 0]
 
         # read params from yaml
         self.robot_name = robot_name
@@ -23,6 +26,7 @@ class RL_Sim(RL):
         for i in range(len(self.params.observations)):
             if self.params.observations[i] == "ang_vel":
                 self.params.observations[i] = "ang_vel_world"
+                # self.params.observations[i] = "ang_vel_body"
 
         # history
         if len(self.params.observations_history) != 0:
@@ -37,21 +41,28 @@ class RL_Sim(RL):
 
         self.InitObservations()
         self.InitOutputs()
+        self.InitControl()
+        self.running_state = STATE.STATE_WAITING
+        # self.running_state = STATE.STATE_RL_RUNNING
 
         # Load robot model
+        self.locker = threading.Lock()
         self.m = mujoco.MjModel.from_xml_path(self.params.xml_path)
         self.d = mujoco.MjData(self.m)
         self.m.opt.timestep = self.params.dt
         self.num_motor = self.m.nu
         self.dim_motor_sensor = MOTOR_SENSOR_NUM * self.num_motor
+        self.viewer = mujoco.viewer.launch_passive(
+            self.m, self.d, key_callback=self.MujocoKeyCallback
+        )
 
         # Check sensor
-        for i in range(self.dim_motor_sensor, self.m.nsensor):
-            name = mujoco.mj_id2name(self.m, mujoco._enums.mjtObj.mjOBJ_SENSOR, i)
-            if name == "imu_quat":
-                self.have_imu_ = True
-            if name == "frame_pos":
-                self.have_frame_sensor_ = True
+        # for i in range(self.dim_motor_sensor, self.m.nsensor):
+        #     name = mujoco.mj_id2name(self.m, mujoco._enums.mjtObj.mjOBJ_SENSOR, i)
+        #     if name == "imu_quat":
+        #         self.have_imu_ = True
+        #     if name == "frame_pos":
+        #         self.have_frame_sensor_ = True
 
         # model
         self.model = torch.jit.load(self.params.policy_path)
@@ -61,10 +72,17 @@ class RL_Sim(RL):
 
         print(LOGGER.INFO + "RL_Sim start")
 
+        # thread loops
+        self.viewer_thread = Thread(target=self.PhysicsViewerThread)
+        self.sim_thread = Thread(target=self.SimulationThread)
+        self.viewer_thread.start()
+        self.sim_thread.start()
+
     def __del__(self):
-        print("\n" + LOGGER.INFO + "RL_Sim exit")
+        print("\r\n" + LOGGER.INFO + "RL_Sim exit")
 
     def GetState(self):
+        # print("\r\n", self.d.sensordata)
         if self.params.framework == "isaacgym":
             self.robot_state.imu.quaternion[3] = self.d.sensordata[
                 self.dim_motor_sensor + 0
@@ -113,21 +131,130 @@ class RL_Sim(RL):
                 i + 2 * self.num_motor
             ]
 
-    def StateController(self, command):
+    def StateController(self, state, command):  # FSM
+        # waiting
+        if self.running_state == STATE.STATE_WAITING:
+            for i in range(self.params.num_of_dofs):
+                command.motor_command.q[i] = state.motor_state.q[i]
+            if self.control.control_state == STATE.STATE_POS_GETUP:
+                self.control.control_state = STATE.STATE_WAITING
+                self.getup_percent = 0.0
+                for i in range(self.params.num_of_dofs):
+                    self.now_state.motor_state.q[i] = state.motor_state.q[i]
+                    self.start_state.motor_state.q[i] = self.now_state.motor_state.q[i]
+                self.running_state = STATE.STATE_POS_GETUP
+                print("\r\n" + LOGGER.INFO + "Switching to STATE_POS_GETUP")
+
+        # stand up (position control)
+        elif self.running_state == STATE.STATE_POS_GETUP:
+            if self.getup_percent < 1.0:
+                self.getup_percent += 1 / 500.0
+                self.getup_percent = min(self.getup_percent, 1.0)
+                for i in range(self.params.num_of_dofs):
+                    command.motor_command.q[i] = (
+                        1 - self.getup_percent
+                    ) * self.now_state.motor_state.q[
+                        i
+                    ] + self.getup_percent * self.params.default_dof_pos[
+                        0
+                    ][
+                        i
+                    ].item()
+                    command.motor_command.dq[i] = 0
+                    command.motor_command.kp[i] = self.params.fixed_kp[0][i].item()
+                    command.motor_command.kd[i] = self.params.fixed_kd[0][i].item()
+                    command.motor_command.tau[i] = 0
+                print(
+                    "\r" + LOGGER.INFO + f"Getting up {self.getup_percent * 100.0:.1f}",
+                    end="",
+                    flush=True,
+                )
+
+            if self.control.control_state == STATE.STATE_RL_INIT:
+                self.control.control_state = STATE.STATE_WAITING
+                self.running_state = STATE.STATE_RL_INIT
+                print("\r\n" + LOGGER.INFO + "Switching to STATE_RL_INIT")
+
+            elif self.control.control_state == STATE.STATE_POS_GETDOWN:
+                self.control.control_state = STATE.STATE_WAITING
+                self.getdown_percent = 0.0
+                for i in range(self.params.num_of_dofs):
+                    self.now_state.motor_state.q[i] = state.motor_state.q[i]
+                self.running_state = STATE.STATE_POS_GETDOWN
+                print("\r\n" + LOGGER.INFO + "Switching to STATE_POS_GETDOWN")
+
+        # init obs and start rl loop
+        elif self.running_state == STATE.STATE_RL_INIT:
+            if self.getup_percent == 1:
+                self.InitObservations()
+                self.InitOutputs()
+                self.InitControl()
+                self.running_state = STATE.STATE_RL_RUNNING
+                print("\r\n" + LOGGER.INFO + "Switching to STATE_RL_RUNNING")
+
         # rl loop
-        print(
-            "\r"
-            + LOGGER.INFO
-            + f"RL Controller x: {self.cmd_vel[0]:.1f} y: {self.cmd_vel[1]:.1f} yaw: {self.cmd_vel[2]:.1f}",
-            end="",
-            flush=True,
-        )
-        for i in range(self.params.num_of_dofs):
-            command.motor_command.q[i] = self.output_dof_pos[0][i].item()
-            command.motor_command.dq[i] = 0
-            command.motor_command.kp[i] = self.params.rl_kp[0][i].item()
-            command.motor_command.kd[i] = self.params.rl_kd[0][i].item()
-            command.motor_command.tau[i] = 0
+        if self.running_state == STATE.STATE_RL_RUNNING:
+            print(
+                "\r"
+                + LOGGER.INFO
+                + f"RL Controller x: {self.control.x:.1f} y: {self.control.y:.1f} yaw: {self.control.yaw:.1f}",
+                end="",
+                flush=True,
+            )
+            for i in range(self.params.num_of_dofs):
+                command.motor_command.q[i] = self.output_dof_pos[0][i].item()
+                command.motor_command.dq[i] = 0
+                command.motor_command.kp[i] = self.params.rl_kp[0][i].item()
+                command.motor_command.kd[i] = self.params.rl_kd[0][i].item()
+                command.motor_command.tau[i] = 0
+
+            if self.control.control_state == STATE.STATE_POS_GETDOWN:
+                self.control.control_state = STATE.STATE_WAITING
+                self.getdown_percent = 0.0
+                for i in range(self.params.num_of_dofs):
+                    self.now_state.motor_state.q[i] = state.motor_state.q[i]
+                self.running_state = STATE.STATE_POS_GETDOWN
+                print("\r\n" + LOGGER.INFO + "Switching to STATE_POS_GETDOWN")
+
+            elif self.control.control_state == STATE.STATE_POS_GETUP:
+                self.control.control_state = STATE.STATE_WAITING
+                self.getup_percent = 0.0
+                for i in range(self.params.num_of_dofs):
+                    self.now_state.motor_state.q[i] = state.motor_state.q[i]
+                self.running_state = STATE.STATE_POS_GETUP
+                print("\r\n" + LOGGER.INFO + "Switching to STATE_POS_GETUP")
+
+        # get down (position control)
+        elif self.running_state == STATE.STATE_POS_GETDOWN:
+            if self.getdown_percent < 1.0:
+                self.getdown_percent += 1 / 500.0
+                self.getdown_percent = min(1.0, self.getdown_percent)
+                for i in range(self.params.num_of_dofs):
+                    command.motor_command.q[i] = (
+                        1 - self.getdown_percent
+                    ) * self.now_state.motor_state.q[
+                        i
+                    ] + self.getdown_percent * self.start_state.motor_state.q[
+                        i
+                    ]
+                    command.motor_command.dq[i] = 0
+                    command.motor_command.kp[i] = self.params.fixed_kp[0][i].item()
+                    command.motor_command.kd[i] = self.params.fixed_kd[0][i].item()
+                    command.motor_command.tau[i] = 0
+                print(
+                    "\r"
+                    + LOGGER.INFO
+                    + f"Getting down {self.getdown_percent * 100.0:.1f}",
+                    end="",
+                    flush=True,
+                )
+
+            if self.getdown_percent == 1:
+                self.InitObservations()
+                self.InitOutputs()
+                self.InitControl()
+                self.running_state = STATE.STATE_WAITING
+                print("\r\n" + LOGGER.INFO + "Switching to STATE_WAITING")
 
     def SetCommand(self, command):
         for i in range(self.num_motor):
@@ -139,64 +266,110 @@ class RL_Sim(RL):
                 * (command.motor_command.dq[i] - self.d.sensordata[i + self.num_motor])
             )
 
+    def RobotControl(self):
+        if self.control.control_state == STATE.STATE_RESET_SIMULATION:
+            mujoco.mj_resetData(self.m, self.d)
+            self.control.control_state = STATE.STATE_WAITING
+        if self.control.control_state == STATE.STATE_TOGGLE_SIMULATION:
+            print("\r\n" + LOGGER.INFO + "Simulation Start")
+            self.simulation_running = not self.simulation_running
+            self.control.control_state = STATE.STATE_WAITING
+
+        if self.simulation_running:
+            self.GetState()
+            self.StateController(self.robot_state, self.robot_command)
+            self.SetCommand(self.robot_command)
+
+    # def get_gravity_orientation(self, quaternion):
+    #     qw = quaternion[0]
+    #     qx = quaternion[1]
+    #     qy = quaternion[2]
+    #     qz = quaternion[3]
+
+    #     gravity_orientation = np.zeros(3)
+
+    #     gravity_orientation[0] = 2 * (-qz * qx + qw * qy)
+    #     gravity_orientation[1] = -2 * (qz * qy + qw * qx)
+    #     gravity_orientation[2] = 1 - 2 * (qw * qw + qz * qz)
+
+    #     return gravity_orientation
+
     def RunModel(self):
-        self.obs.lin_vel = torch.tensor(
-            [
+        if self.running_state == STATE.STATE_RL_RUNNING and self.simulation_running:
+            self.obs.lin_vel = torch.tensor(
                 [
-                    self.d.sensordata[self.dim_motor_sensor + 13],
-                    self.d.sensordata[self.dim_motor_sensor + 14],
-                    self.d.sensordata[self.dim_motor_sensor + 15],
-                ]
-            ],
-            dtype=torch.float,
-        )
-        self.obs.ang_vel = torch.tensor(
-            self.robot_state.imu.gyroscope, dtype=torch.float
-        ).unsqueeze(0)
-        self.obs.commands = torch.tensor(
-            [[self.cmd_vel[0], self.cmd_vel[1], self.cmd_vel[2]]], dtype=torch.float
-        )
-        self.obs.base_quat = torch.tensor(
-            self.robot_state.imu.quaternion, dtype=torch.float
-        ).unsqueeze(0)
-        self.obs.dof_pos = (
-            torch.tensor(self.robot_state.motor_state.q, dtype=torch.float)
-            .narrow(0, 0, self.params.num_of_dofs)
-            .unsqueeze(0)
-        )
-        self.obs.dof_vel = (
-            torch.tensor(self.robot_state.motor_state.dq, dtype=torch.float)
-            .narrow(0, 0, self.params.num_of_dofs)
-            .unsqueeze(0)
-        )
-
-        clamped_actions = self.Forward()
-
-        for i in self.params.hip_scale_reduction_indices:
-            clamped_actions[0][i] *= self.params.hip_scale_reduction
-
-        self.obs.actions = clamped_actions
-
-        origin_output_dof_tau = self.ComputeTorques(self.obs.actions)
-
-        self.output_dof_tau = torch.clamp(
-            origin_output_dof_tau,
-            -(self.params.torque_limits),
-            self.params.torque_limits,
-        )
-        self.output_dof_pos = self.ComputePosition(self.obs.actions)
-
-        if CSV_LOGGER:
-            tau_est = torch.zeros((1, self.params.num_of_dofs))
-            for i in range(self.params.num_of_dofs):
-                tau_est[0, i] = self.d.sensordata[i + 2 * self.num_motor]
-            self.CSVLogger(
-                self.output_dof_tau,
-                tau_est,
-                self.obs.dof_pos,
-                self.output_dof_pos,
-                self.obs.dof_vel,
+                    [
+                        self.d.sensordata[self.dim_motor_sensor + 13],
+                        self.d.sensordata[self.dim_motor_sensor + 14],
+                        self.d.sensordata[self.dim_motor_sensor + 15],
+                    ]
+                ],
+                dtype=torch.float,
             )
+            # self.obs.lin_vel = torch.tensor(
+            #     [
+            #         [
+            #             self.d.qvel[0],
+            #             self.d.qvel[1],
+            #             self.d.qvel[2],
+            #         ]
+            #     ],
+            #     dtype=torch.float,
+            # )
+            # self.obs.gravity_vec = torch.tensor(
+            #     self.get_gravity_orientation(self.d.qpos[3:7]), dtype=torch.float
+            # ).unsqueeze(0)
+
+            self.obs.ang_vel = torch.tensor(
+                self.robot_state.imu.gyroscope, dtype=torch.float
+            ).unsqueeze(0)
+            # self.obs.commands = torch.tensor(
+            #     [[self.cmd_vel[0], self.cmd_vel[1], self.cmd_vel[2]]], dtype=torch.float
+            # )
+            self.obs.commands = torch.tensor(
+                [[self.control.x, self.control.y, self.control.yaw]], dtype=torch.float
+            )
+            self.obs.base_quat = torch.tensor(
+                self.robot_state.imu.quaternion, dtype=torch.float
+            ).unsqueeze(0)
+            self.obs.dof_pos = (
+                torch.tensor(self.robot_state.motor_state.q, dtype=torch.float)
+                .narrow(0, 0, self.params.num_of_dofs)
+                .unsqueeze(0)
+            )
+            self.obs.dof_vel = (
+                torch.tensor(self.robot_state.motor_state.dq, dtype=torch.float)
+                .narrow(0, 0, self.params.num_of_dofs)
+                .unsqueeze(0)
+            )
+
+            clamped_actions = self.Forward()
+
+            for i in self.params.hip_scale_reduction_indices:
+                clamped_actions[0][i] *= self.params.hip_scale_reduction
+
+            self.obs.actions = clamped_actions
+
+            origin_output_dof_tau = self.ComputeTorques(self.obs.actions)
+
+            self.output_dof_tau = torch.clamp(
+                origin_output_dof_tau,
+                -(self.params.torque_limits),
+                self.params.torque_limits,
+            )
+            self.output_dof_pos = self.ComputePosition(self.obs.actions)
+
+            if CSV_LOGGER:
+                tau_est = torch.zeros((1, self.params.num_of_dofs))
+                for i in range(self.params.num_of_dofs):
+                    tau_est[0, i] = self.d.sensordata[i + 2 * self.num_motor]
+                self.CSVLogger(
+                    self.output_dof_tau,
+                    tau_est,
+                    self.obs.dof_pos,
+                    self.output_dof_pos,
+                    self.obs.dof_vel,
+                )
 
     def Forward(self):
         torch.set_grad_enabled(False)
@@ -219,33 +392,67 @@ class RL_Sim(RL):
         else:
             return actions
 
-    def main_loop(self):
+    def SimulationThread(self):
         counter = 0
+        # Close the viewer automatically after simulation_duration wall-seconds.
+        start = time.time()
+        while self.viewer.is_running() and time.time() - start < self.params.total_time:
+            step_start = time.perf_counter()
 
-        with mujoco.viewer.launch_passive(self.m, self.d) as viewer:
-            # Close the viewer automatically after simulation_duration wall-seconds.
-            start = time.time()
-            while viewer.is_running() and time.time() - start < self.params.total_time:
-                step_start = time.time()
-                # Apply state update here.
-                self.GetState()
-                self.StateController(self.robot_command)
-                self.SetCommand(self.robot_command)
+            self.locker.acquire()
+            # Apply state update here.
+            self.RobotControl()
+            # physics update
+            # mj_step can be replaced with code that also evaluates
+            # a policy and applies a control signal before stepping the physics.
+            mujoco.mj_step(self.m, self.d)
 
-                # physics update
-                # mj_step can be replaced with code that also evaluates
-                # a policy and applies a control signal before stepping the physics.
-                mujoco.mj_step(self.m, self.d)
+            self.locker.release()
 
-                counter += 1
-                if counter % self.params.decimation == 0:
-                    # Apply control signal here.
-                    self.RunModel()
+            counter += 1
+            if counter % self.params.decimation == 0:
+                # Apply control signal here.
+                self.RunModel()
 
-                # Pick up changes to the physics state, apply perturbations, update options from GUI.
-                viewer.sync()
+            # Rudimentary time keeping, will drift relative to wall clock.
+            time_until_next_step = self.m.opt.timestep - (
+                time.perf_counter() - step_start
+            )
+            if time_until_next_step > 0:
+                time.sleep(time_until_next_step)
 
-                # Rudimentary time keeping, will drift relative to wall clock.
-                time_until_next_step = self.m.opt.timestep - (time.time() - step_start)
-                if time_until_next_step > 0:
-                    time.sleep(time_until_next_step)
+    def PhysicsViewerThread(self):
+        while self.viewer.is_running():
+            self.locker.acquire()
+            self.viewer.sync()
+            self.locker.release()
+            time.sleep(self.params.viewer_dt)
+
+    def MujocoKeyCallback(self, key):
+        glfw = mujoco.glfw.glfw
+        if key == glfw.KEY_1:
+            self.control.control_state = STATE.STATE_POS_GETUP
+        elif key == glfw.KEY_P:
+            self.control.control_state = STATE.STATE_RL_INIT
+        elif key == glfw.KEY_4:
+            self.control.control_state = STATE.STATE_POS_GETDOWN
+        elif key == glfw.KEY_W:
+            self.control.x += 0.1
+        elif key == glfw.KEY_S:
+            self.control.x -= 0.1
+        elif key == glfw.KEY_A:
+            self.control.yaw += 0.1
+        elif key == glfw.KEY_D:
+            self.control.yaw -= 0.1
+        elif key == glfw.KEY_J:
+            self.control.y += 0.1
+        elif key == glfw.KEY_L:
+            self.control.y -= 0.1
+        elif key == glfw.KEY_R:
+            self.control.control_state = STATE.STATE_RESET_SIMULATION
+        elif key == glfw.KEY_ENTER:
+            self.control.control_state = STATE.STATE_TOGGLE_SIMULATION
+        elif key == glfw.KEY_SPACE:
+            self.control.x = 0
+            self.control.y = 0
+            self.control.yaw = 0

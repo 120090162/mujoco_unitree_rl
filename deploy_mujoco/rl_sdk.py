@@ -2,6 +2,8 @@ from datetime import datetime
 import torch
 import yaml
 import csv
+from enum import Enum, auto
+import numpy as np
 
 LEGGED_GYM_ROOT_DIR = "/home/joshua/WORK/test_genesis/mujoco_unitree_rl"
 
@@ -46,6 +48,24 @@ class RobotState:
             self.cur = [0.0] * 32
 
 
+class STATE(Enum):
+    STATE_WAITING = 0
+    STATE_POS_GETUP = auto()
+    STATE_RL_INIT = auto()
+    STATE_RL_RUNNING = auto()
+    STATE_POS_GETDOWN = auto()
+    STATE_RESET_SIMULATION = auto()
+    STATE_TOGGLE_SIMULATION = auto()
+
+
+class Control:
+    def __init__(self):
+        self.control_state = STATE.STATE_WAITING
+        self.x = 0.0
+        self.y = 0.0
+        self.yaw = 0.0
+
+
 class ModelParams:
     def __init__(self):
         self.policy_path = None
@@ -54,6 +74,7 @@ class ModelParams:
         self.framework = None
         self.total_time = None
         self.dt = None
+        self.viewer_dt = None
         self.decimation = None
         self.num_observations = None
         self.observations = None
@@ -109,8 +130,15 @@ class RL:
         self.robot_state = RobotState()
         self.robot_command = RobotCommand()
 
+        # control
+        self.control = Control()
+
         # others
         self.robot_name = ""
+        self.running_state = (
+            STATE.STATE_RL_RUNNING
+        )  # default running_state set to STATE_RL_RUNNING
+        self.simulation_running = False
 
         ### protected in cpp ###
         # rl module
@@ -149,6 +177,7 @@ class RL:
                         self.obs.base_quat, self.obs.gravity_vec, self.params.framework
                     )
                 )
+                # obs_list.append(self.obs.gravity_vec)
             elif observation == "commands":
                 obs_list.append(self.obs.commands * self.params.commands_scale)
             elif observation == "dof_pos":
@@ -169,7 +198,11 @@ class RL:
         self.obs.ang_vel = torch.zeros(1, 3, dtype=torch.float)
         self.obs.gravity_vec = torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float)
         self.obs.commands = torch.zeros(1, 3, dtype=torch.float)
-        self.obs.base_quat = torch.zeros(1, 4, dtype=torch.float)
+        # self.obs.base_quat = torch.zeros(1, 4, dtype=torch.float)
+        if self.params.framework == "isaacsim":
+            self.obs.base_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float)
+        elif self.params.framework == "isaacgym":
+            self.obs.base_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=torch.float)
         self.obs.dof_pos = self.params.default_dof_pos
         self.obs.dof_vel = torch.zeros(1, self.params.num_of_dofs, dtype=torch.float)
         self.obs.actions = torch.zeros(1, self.params.num_of_dofs, dtype=torch.float)
@@ -177,6 +210,12 @@ class RL:
     def InitOutputs(self):
         self.output_dof_tau = torch.zeros(1, self.params.num_of_dofs, dtype=torch.float)
         self.output_dof_pos = self.params.default_dof_pos
+
+    def InitControl(self):
+        self.control.control_state = STATE.STATE_WAITING
+        self.control.x = 0.0
+        self.control.y = 0.0
+        self.control.yaw = 0.0
 
     def ComputeTorques(self, actions):
         actions_scaled = actions * self.params.action_scale
@@ -243,6 +282,7 @@ class RL:
         cols = config["cols"]
         self.params.total_time = config["simulation_duration"]
         self.params.dt = config["simulation_dt"]
+        self.params.viewer_dt = config["viewer_dt"]
         self.params.decimation = config["control_decimation"]
         self.params.num_observations = config["num_obs"]
         self.params.observations = config["observations"]
@@ -310,11 +350,13 @@ class RL:
             config["joint_controller_names"], self.params.framework, rows, cols
         )
 
-        self.params.cmd_vel = config["cmd_init"]
+        # self.params.cmd_vel = config["cmd_init"]
 
     def CSVInit(self):
         self.csv_filename = self.params.policy_path
-        self.csv_filename = self.csv_filename.replace("policy.pt", "csv")
+        self.csv_filename = self.csv_filename.replace(
+            f"{self.params.model_name}", "csv"
+        )
 
         # Uncomment these lines if need timestamp for file name
         now = datetime.now()

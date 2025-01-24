@@ -172,12 +172,12 @@ class RL:
                     * self.params.ang_vel_scale
                 )
             elif observation == "gravity_vec":
-                # obs_list.append(
-                #     self.QuatRotateInverse(
-                #         self.obs.base_quat, self.obs.gravity_vec, self.params.framework
-                #     )
-                # )
-                obs_list.append(self.obs.gravity_vec)
+                obs_list.append(
+                    self.QuatRotateInverse(
+                        self.obs.base_quat, self.obs.gravity_vec, self.params.framework
+                    )
+                )
+                # obs_list.append(self.obs.gravity_vec)
             elif observation == "commands":
                 obs_list.append(self.obs.commands * self.params.commands_scale)
             elif observation == "dof_pos":
@@ -198,7 +198,11 @@ class RL:
         self.obs.ang_vel = torch.zeros(1, 3, dtype=torch.float)
         self.obs.gravity_vec = torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float)
         self.obs.commands = torch.zeros(1, 3, dtype=torch.float)
-        self.obs.base_quat = torch.zeros(1, 4, dtype=torch.float)
+        # self.obs.base_quat = torch.zeros(1, 4, dtype=torch.float)
+        if self.params.framework == "isaacsim":
+            self.obs.base_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float)
+        elif self.params.framework == "isaacgym":
+            self.obs.base_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=torch.float)
         self.obs.dof_pos = self.params.default_dof_pos
         self.obs.dof_vel = torch.zeros(1, self.params.num_of_dofs, dtype=torch.float)
         self.obs.actions = torch.zeros(1, self.params.num_of_dofs, dtype=torch.float)
@@ -350,7 +354,9 @@ class RL:
 
     def CSVInit(self):
         self.csv_filename = self.params.policy_path
-        self.csv_filename = self.csv_filename.replace("policy.pt", "csv")
+        self.csv_filename = self.csv_filename.replace(
+            f"{self.params.model_name}", "csv"
+        )
 
         # Uncomment these lines if need timestamp for file name
         now = datetime.now()

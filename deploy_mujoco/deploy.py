@@ -25,8 +25,8 @@ class RL_Sim(RL):
         self.ReadYaml(config_file)
         for i in range(len(self.params.observations)):
             if self.params.observations[i] == "ang_vel":
-                # self.params.observations[i] = "ang_vel_world"
-                self.params.observations[i] = "ang_vel_body"
+                self.params.observations[i] = "ang_vel_world"
+                # self.params.observations[i] = "ang_vel_body"
 
         # history
         if len(self.params.observations_history) != 0:
@@ -42,7 +42,8 @@ class RL_Sim(RL):
         self.InitObservations()
         self.InitOutputs()
         self.InitControl()
-        self.running_state = STATE.STATE_RL_RUNNING
+        self.running_state = STATE.STATE_WAITING
+        # self.running_state = STATE.STATE_RL_RUNNING
 
         # Load robot model
         self.locker = threading.Lock()
@@ -56,12 +57,12 @@ class RL_Sim(RL):
         )
 
         # Check sensor
-        for i in range(self.dim_motor_sensor, self.m.nsensor):
-            name = mujoco.mj_id2name(self.m, mujoco._enums.mjtObj.mjOBJ_SENSOR, i)
-            if name == "imu_quat":
-                self.have_imu_ = True
-            if name == "frame_pos":
-                self.have_frame_sensor_ = True
+        # for i in range(self.dim_motor_sensor, self.m.nsensor):
+        #     name = mujoco.mj_id2name(self.m, mujoco._enums.mjtObj.mjOBJ_SENSOR, i)
+        #     if name == "imu_quat":
+        #         self.have_imu_ = True
+        #     if name == "frame_pos":
+        #         self.have_frame_sensor_ = True
 
         # model
         self.model = torch.jit.load(self.params.policy_path)
@@ -81,6 +82,7 @@ class RL_Sim(RL):
         print("\r\n" + LOGGER.INFO + "RL_Sim exit")
 
     def GetState(self):
+        # print("\r\n", self.d.sensordata)
         if self.params.framework == "isaacgym":
             self.robot_state.imu.quaternion[3] = self.d.sensordata[
                 self.dim_motor_sensor + 0
@@ -129,7 +131,7 @@ class RL_Sim(RL):
                 i + 2 * self.num_motor
             ]
 
-    def StateController(self, state, command):
+    def StateController(self, state, command):  # FSM
         # waiting
         if self.running_state == STATE.STATE_WAITING:
             for i in range(self.params.num_of_dofs):
@@ -278,45 +280,45 @@ class RL_Sim(RL):
             self.StateController(self.robot_state, self.robot_command)
             self.SetCommand(self.robot_command)
 
-    def get_gravity_orientation(self, quaternion):
-        qw = quaternion[0]
-        qx = quaternion[1]
-        qy = quaternion[2]
-        qz = quaternion[3]
+    # def get_gravity_orientation(self, quaternion):
+    #     qw = quaternion[0]
+    #     qx = quaternion[1]
+    #     qy = quaternion[2]
+    #     qz = quaternion[3]
 
-        gravity_orientation = np.zeros(3)
+    #     gravity_orientation = np.zeros(3)
 
-        gravity_orientation[0] = 2 * (-qz * qx + qw * qy)
-        gravity_orientation[1] = -2 * (qz * qy + qw * qx)
-        gravity_orientation[2] = 1 - 2 * (qw * qw + qz * qz)
+    #     gravity_orientation[0] = 2 * (-qz * qx + qw * qy)
+    #     gravity_orientation[1] = -2 * (qz * qy + qw * qx)
+    #     gravity_orientation[2] = 1 - 2 * (qw * qw + qz * qz)
 
-        return gravity_orientation
+    #     return gravity_orientation
 
     def RunModel(self):
         if self.running_state == STATE.STATE_RL_RUNNING and self.simulation_running:
-            # self.obs.lin_vel = torch.tensor(
-            #     [
-            #         [
-            #             self.d.sensordata[self.dim_motor_sensor + 13],
-            #             self.d.sensordata[self.dim_motor_sensor + 14],
-            #             self.d.sensordata[self.dim_motor_sensor + 15],
-            #         ]
-            #     ],
-            #     dtype=torch.float,
-            # )
             self.obs.lin_vel = torch.tensor(
                 [
                     [
-                        self.d.qvel[0],
-                        self.d.qvel[1],
-                        self.d.qvel[2],
+                        self.d.sensordata[self.dim_motor_sensor + 13],
+                        self.d.sensordata[self.dim_motor_sensor + 14],
+                        self.d.sensordata[self.dim_motor_sensor + 15],
                     ]
                 ],
                 dtype=torch.float,
             )
-            self.obs.gravity_vec = torch.tensor(
-                self.get_gravity_orientation(self.d.qpos[3:7]), dtype=torch.float
-            ).unsqueeze(0)
+            # self.obs.lin_vel = torch.tensor(
+            #     [
+            #         [
+            #             self.d.qvel[0],
+            #             self.d.qvel[1],
+            #             self.d.qvel[2],
+            #         ]
+            #     ],
+            #     dtype=torch.float,
+            # )
+            # self.obs.gravity_vec = torch.tensor(
+            #     self.get_gravity_orientation(self.d.qpos[3:7]), dtype=torch.float
+            # ).unsqueeze(0)
 
             self.obs.ang_vel = torch.tensor(
                 self.robot_state.imu.gyroscope, dtype=torch.float
@@ -428,11 +430,11 @@ class RL_Sim(RL):
 
     def MujocoKeyCallback(self, key):
         glfw = mujoco.glfw.glfw
-        if key == glfw.KEY_0:
+        if key == glfw.KEY_1:
             self.control.control_state = STATE.STATE_POS_GETUP
         elif key == glfw.KEY_P:
             self.control.control_state = STATE.STATE_RL_INIT
-        elif key == glfw.KEY_1:
+        elif key == glfw.KEY_4:
             self.control.control_state = STATE.STATE_POS_GETDOWN
         elif key == glfw.KEY_W:
             self.control.x += 0.1

@@ -21,3 +21,8 @@ R : 重置模型
 运行示例
 
 ![screenshot](https://github.com/user-attachments/assets/2a03167c-a71e-4b63-84c3-6b3082c06f01)
+
+
+## IsaacGym 与 IsaacSim/IsaacLab 的区别
+- joint names的顺序, 深度搜索和广度搜索
+- quat的顺序, xyzw和wxyz

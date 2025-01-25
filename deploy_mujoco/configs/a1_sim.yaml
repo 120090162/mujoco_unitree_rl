@@ -1,5 +1,5 @@
 policy_path: "{LEGGED_GYM_ROOT_DIR}/pre_train/a1/{model_name}"
-xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/unitree_a1/scene.xml"
+xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/unitree_a1_sim/scene.xml"
 model_name: "policy.pt"
 framework: "isaacsim"
 # Total simulation time
@@ -25,14 +25,22 @@ clip_actions_upper: [100, 100, 100,
                       100, 100, 100,
                       100, 100, 100,
                       100, 100, 100]
-rl_kp: [20, 20, 20,
-        20, 20, 20,
-        20, 20, 20,
-        20, 20, 20]
-rl_kd: [0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5]
+# rl_kp: [20, 20, 20,
+#         20, 20, 20,
+#         20, 20, 20,
+#         20, 20, 20]
+# rl_kd: [0.5, 0.5, 0.5,
+#         0.5, 0.5, 0.5,
+#         0.5, 0.5, 0.5,
+#         0.5, 0.5, 0.5]
+rl_kp: [20.1, 20.1, 20.1,
+        20.1, 20.1, 20.1,
+        20.1, 20.1, 20.1,
+        20.1, 20.1, 20.1]
+rl_kd: [0.754, 0.754, 0.754,
+        0.754, 0.754, 0.754,
+        0.754, 0.754, 0.754,
+        0.754, 0.754, 0.754]
 fixed_kp: [80, 80, 80,
             80, 80, 80,
             80, 80, 80,

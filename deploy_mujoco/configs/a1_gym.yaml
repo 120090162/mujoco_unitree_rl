@@ -1,5 +1,5 @@
 policy_path: "{LEGGED_GYM_ROOT_DIR}/pre_train/a1/{model_name}"
-xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/unitree_a1/scene.xml"
+xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/unitree_a1_gym/scene.xml"
 model_name: "model_0702.pt"
 framework: "isaacgym"
 # Total simulation time

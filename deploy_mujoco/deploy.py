@@ -82,7 +82,6 @@ class RL_Sim(RL):
         print("\r\n" + LOGGER.INFO + "RL_Sim exit")
 
     def GetState(self):
-        # print("\r\n", self.d.sensordata)
         if self.params.framework == "isaacgym":
             self.robot_state.imu.quaternion[3] = self.d.sensordata[
                 self.dim_motor_sensor + 0
@@ -123,7 +122,6 @@ class RL_Sim(RL):
         self.robot_state.imu.accelerometer[2] = self.d.sensordata[
             self.dim_motor_sensor + 9
         ]
-
         for i in range(self.params.num_of_dofs):
             self.robot_state.motor_state.q[i] = self.d.sensordata[i]
             self.robot_state.motor_state.dq[i] = self.d.sensordata[i + self.num_motor]

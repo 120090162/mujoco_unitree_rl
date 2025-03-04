@@ -2,6 +2,7 @@ import mujoco.glfw
 import torch
 from rl_sdk import *
 from observation_buffer import *
+import utils
 
 import mujoco.viewer
 import mujoco
@@ -9,7 +10,8 @@ import time
 from threading import Thread
 import threading
 
-CSV_LOGGER = False
+CSV_LOGGER = True
+CONTACT_LOGGER = False
 MOTOR_SENSOR_NUM = 3
 
 
@@ -55,6 +57,7 @@ class RL_Sim(RL):
         self.viewer = mujoco.viewer.launch_passive(
             self.m, self.d, key_callback=self.MujocoKeyCallback
         )
+        self.motor_strength = [1.0] * 12
 
         # Check sensor
         # for i in range(self.dim_motor_sensor, self.m.nsensor):
@@ -66,9 +69,29 @@ class RL_Sim(RL):
 
         # model
         self.model = torch.jit.load(self.params.policy_path)
+        # 初始化轨迹绘制器
+        self.trajectory_drawer0 = utils.TrajectoryDrawer(
+            max_segments=1000, min_distance=0.02
+        )
+        self.trajectory_drawer1 = utils.TrajectoryDrawer(
+            max_segments=1000, min_distance=0.02
+        )
+        self.trajectory_drawer2 = utils.TrajectoryDrawer(
+            max_segments=1000, min_distance=0.02
+        )
+        self.trajectory_drawer3 = utils.TrajectoryDrawer(
+            max_segments=1000, min_distance=0.02
+        )
+        FL_id = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "FL_touch")
+        FR_id = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "FR_touch")
+        RL_id = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "RL_touch")
+        RR_id = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "RR_touch")
+        self.id = [FL_id, FR_id, RL_id, RR_id]
         # others
         if CSV_LOGGER:
             self.CSVInit()
+        if CONTACT_LOGGER:
+            self.CONTACTInit()
 
         print(LOGGER.INFO + "RL_Sim start")
 
@@ -95,7 +118,7 @@ class RL_Sim(RL):
             self.robot_state.imu.quaternion[2] = self.d.sensordata[
                 self.dim_motor_sensor + 3
             ]
-        elif self.params.framework == "isaacsim":
+        elif self.params.framework == "isaacsim" or self.params.framework == "isaaclab":
             self.robot_state.imu.quaternion[0] = self.d.sensordata[
                 self.dim_motor_sensor + 0
             ]
@@ -128,6 +151,18 @@ class RL_Sim(RL):
             self.robot_state.motor_state.tau_est[i] = self.d.sensordata[
                 i + 2 * self.num_motor
             ]
+        self.robot_state.foot_force[0] = (
+            int(self.d.sensordata[self.dim_motor_sensor + 16]) > 0
+        )
+        self.robot_state.foot_force[1] = (
+            int(self.d.sensordata[self.dim_motor_sensor + 17]) > 0
+        )
+        self.robot_state.foot_force[2] = (
+            int(self.d.sensordata[self.dim_motor_sensor + 18]) > 0
+        )
+        self.robot_state.foot_force[3] = (
+            int(self.d.sensordata[self.dim_motor_sensor + 19]) > 0
+        )
 
     def StateController(self, state, command):  # FSM
         # waiting
@@ -256,9 +291,8 @@ class RL_Sim(RL):
 
     def SetCommand(self, command):
         for i in range(self.num_motor):
-            self.d.ctrl[i] = (
-                command.motor_command.tau[i]
-                + command.motor_command.kp[i]
+            self.d.ctrl[i] = command.motor_command.tau[i] + self.motor_strength[i] * (
+                command.motor_command.kp[i]
                 * (command.motor_command.q[i] - self.d.sensordata[i])
                 + command.motor_command.kd[i]
                 * (command.motor_command.dq[i] - self.d.sensordata[i + self.num_motor])
@@ -294,52 +328,107 @@ class RL_Sim(RL):
 
     def RunModel(self):
         if self.running_state == STATE.STATE_RL_RUNNING and self.simulation_running:
-            self.obs.lin_vel = torch.tensor(
-                [
+            if (
+                self.params.framework == "isaacgym"
+                or self.params.framework == "isaacsim"
+            ):
+                self.obs.lin_vel = torch.tensor(
                     [
-                        self.d.sensordata[self.dim_motor_sensor + 13],
-                        self.d.sensordata[self.dim_motor_sensor + 14],
-                        self.d.sensordata[self.dim_motor_sensor + 15],
-                    ]
-                ],
-                dtype=torch.float,
-            )
-            # self.obs.lin_vel = torch.tensor(
-            #     [
-            #         [
-            #             self.d.qvel[0],
-            #             self.d.qvel[1],
-            #             self.d.qvel[2],
-            #         ]
-            #     ],
-            #     dtype=torch.float,
-            # )
-            # self.obs.gravity_vec = torch.tensor(
-            #     self.get_gravity_orientation(self.d.qpos[3:7]), dtype=torch.float
-            # ).unsqueeze(0)
+                        [
+                            self.d.sensordata[self.dim_motor_sensor + 13],
+                            self.d.sensordata[self.dim_motor_sensor + 14],
+                            self.d.sensordata[self.dim_motor_sensor + 15],
+                        ]
+                    ],
+                    dtype=torch.float,
+                )
+                # self.obs.lin_vel = torch.tensor(
+                #     [
+                #         [
+                #             self.d.qvel[0],
+                #             self.d.qvel[1],
+                #             self.d.qvel[2],
+                #         ]
+                #     ],
+                #     dtype=torch.float,
+                # )
+                # self.obs.gravity_vec = torch.tensor(
+                #     self.get_gravity_orientation(self.d.qpos[3:7]), dtype=torch.float
+                # ).unsqueeze(0)
 
-            self.obs.ang_vel = torch.tensor(
-                self.robot_state.imu.gyroscope, dtype=torch.float
-            ).unsqueeze(0)
-            # self.obs.commands = torch.tensor(
-            #     [[self.cmd_vel[0], self.cmd_vel[1], self.cmd_vel[2]]], dtype=torch.float
-            # )
-            self.obs.commands = torch.tensor(
-                [[self.control.x, self.control.y, self.control.yaw]], dtype=torch.float
-            )
-            self.obs.base_quat = torch.tensor(
-                self.robot_state.imu.quaternion, dtype=torch.float
-            ).unsqueeze(0)
-            self.obs.dof_pos = (
-                torch.tensor(self.robot_state.motor_state.q, dtype=torch.float)
-                .narrow(0, 0, self.params.num_of_dofs)
-                .unsqueeze(0)
-            )
-            self.obs.dof_vel = (
-                torch.tensor(self.robot_state.motor_state.dq, dtype=torch.float)
-                .narrow(0, 0, self.params.num_of_dofs)
-                .unsqueeze(0)
-            )
+                self.obs.ang_vel = torch.tensor(
+                    self.robot_state.imu.gyroscope, dtype=torch.float
+                ).unsqueeze(0)
+                self.obs.commands = torch.tensor(
+                    [[self.cmd_vel[0], self.cmd_vel[1], self.cmd_vel[2]]],
+                    dtype=torch.float,
+                )
+                # self.obs.commands = torch.tensor(
+                #     [[self.control.x, self.control.y, self.control.yaw]],
+                #     dtype=torch.float,
+                # )
+                self.obs.base_quat = torch.tensor(
+                    self.robot_state.imu.quaternion, dtype=torch.float
+                ).unsqueeze(0)
+                self.obs.dof_pos = (
+                    torch.tensor(self.robot_state.motor_state.q, dtype=torch.float)
+                    .narrow(0, 0, self.params.num_of_dofs)
+                    .unsqueeze(0)
+                )
+                self.obs.dof_vel = (
+                    torch.tensor(self.robot_state.motor_state.dq, dtype=torch.float)
+                    .narrow(0, 0, self.params.num_of_dofs)
+                    .unsqueeze(0)
+                )
+            elif self.params.framework == "isaaclab":
+                self.obs.lin_vel = torch.tensor(
+                    [
+                        [
+                            self.d.sensordata[self.dim_motor_sensor + 13],
+                            self.d.sensordata[self.dim_motor_sensor + 14],
+                            self.d.sensordata[self.dim_motor_sensor + 15],
+                        ]
+                    ],
+                    dtype=torch.float,
+                )
+                self.obs.ang_vel = torch.tensor(
+                    self.robot_state.imu.gyroscope, dtype=torch.float
+                ).unsqueeze(0)
+                self.obs.commands = torch.tensor(
+                    [[self.cmd_vel[0], self.cmd_vel[1], self.cmd_vel[2]]],
+                    dtype=torch.float,
+                )
+                self.obs.dof_pos = (
+                    torch.tensor(self.robot_state.motor_state.q, dtype=torch.float)
+                    .narrow(0, 0, self.params.num_of_dofs)
+                    .unsqueeze(0)
+                )
+                self.obs.dof_vel = (
+                    torch.tensor(self.robot_state.motor_state.dq, dtype=torch.float)
+                    .narrow(0, 0, self.params.num_of_dofs)
+                    .unsqueeze(0)
+                )
+                self.obs.foot_force = torch.tensor(
+                    self.robot_state.foot_force, dtype=torch.float
+                ).unsqueeze(0)
+                # self.obs.motor_strength = torch.tensor(
+                #     self.motor_strength, dtype=torch.float
+                # ).unsqueeze(0)
+                # self.obs.rigid_object_properties = torch.tensor(
+                #     [
+                #         self.d.sensordata[self.dim_motor_sensor + 10],
+                #         self.d.sensordata[self.dim_motor_sensor + 11],
+                #         self.d.sensordata[self.dim_motor_sensor + 12],
+                #         12.0,
+                #         0.8,
+                #         0.02,
+                #         0.01,
+                #     ],
+                #     dtype=torch.float,
+                # ).unsqueeze(0)
+                # self.obs.height_map = torch.tensor(
+                #     [0] * 187, dtype=torch.float
+                # ).unsqueeze(0)
 
             clamped_actions = self.Forward()
 
@@ -358,16 +447,25 @@ class RL_Sim(RL):
             self.output_dof_pos = self.ComputePosition(self.obs.actions)
 
             if CSV_LOGGER:
-                tau_est = torch.zeros((1, self.params.num_of_dofs))
-                for i in range(self.params.num_of_dofs):
-                    tau_est[0, i] = self.d.sensordata[i + 2 * self.num_motor]
                 self.CSVLogger(
-                    self.output_dof_tau,
-                    tau_est,
-                    self.obs.dof_pos,
-                    self.output_dof_pos,
-                    self.obs.dof_vel,
+                    self.d.time,
+                    self.d.sensordata[self.dim_motor_sensor + 13],
+                    self.cmd_vel[0],
+                    self.d.sensordata[self.dim_motor_sensor + 6],
+                    self.cmd_vel[2],
                 )
+                # tau_est = torch.zeros((1, self.params.num_of_dofs))
+                # for i in range(self.params.num_of_dofs):
+                #     tau_est[0, i] = self.d.sensordata[i + 2 * self.num_motor]
+                # self.CSVLogger(
+                #     self.output_dof_tau,
+                #     tau_est,
+                #     self.obs.dof_pos,
+                #     self.output_dof_pos,
+                #     self.obs.dof_vel,
+                # )
+            if CONTACT_LOGGER:
+                self.CONTACTLogger(self.d.time, self.robot_state.foot_force)
 
     def Forward(self):
         torch.set_grad_enabled(False)
@@ -392,10 +490,27 @@ class RL_Sim(RL):
 
     def SimulationThread(self):
         counter = 0
+        change = 0
         # Close the viewer automatically after simulation_duration wall-seconds.
         start = time.time()
         while self.viewer.is_running() and time.time() - start < self.params.total_time:
             step_start = time.perf_counter()
+            simTime = self.d.time
+            if simTime > 10:
+                if change == 0:
+                    change = 1
+                    self.cmd_vel[0] -= 0.1
+                    self.cmd_vel[2] += 0.1
+            # if simTime > 10:
+            #     if change == 1:
+            #         self.cmd_vel[0] += 0.02
+            #         self.cmd_vel[2] = 0
+            if simTime > 14:
+                # print("fault")
+                self.motor_strength[2] = 0.6
+                # self.motor_strength[5] = 0.2
+                # self.motor_strength[8] = 0.2
+                # self.motor_strength[11] = 0.2
 
             self.locker.acquire()
             # Apply state update here.
@@ -422,6 +537,31 @@ class RL_Sim(RL):
     def PhysicsViewerThread(self):
         while self.viewer.is_running():
             self.locker.acquire()
+            self.viewer.user_scn.ngeom = 0
+            self.trajectory_drawer0.add_point(self.d.site_xpos[self.id[0]].copy())
+            self.trajectory_drawer0.draw_trajectory(
+                self.viewer,
+                color=[1, 0, 0, 1],  # 绿色轨迹
+                width=0.002,
+            )
+            self.trajectory_drawer1.add_point(self.d.site_xpos[self.id[1]].copy())
+            self.trajectory_drawer1.draw_trajectory(
+                self.viewer,
+                color=[0, 1, 0, 1],  # 绿色轨迹
+                width=0.002,
+            )
+            self.trajectory_drawer2.add_point(self.d.site_xpos[self.id[2]].copy())
+            self.trajectory_drawer2.draw_trajectory(
+                self.viewer,
+                color=[0, 0, 1, 1],  # 绿色轨迹
+                width=0.002,
+            )
+            self.trajectory_drawer3.add_point(self.d.site_xpos[self.id[3]].copy())
+            self.trajectory_drawer3.draw_trajectory(
+                self.viewer,
+                color=[0.5569, 0.8118, 0.7882, 1],  # 绿色轨迹
+                width=0.002,
+            )
             self.viewer.sync()
             self.locker.release()
             time.sleep(self.params.viewer_dt)

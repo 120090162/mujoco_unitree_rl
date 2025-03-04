@@ -32,6 +32,7 @@ class RobotState:
     def __init__(self):
         self.imu = self.IMU()
         self.motor_state = self.MotorState()
+        self.foot_force = [0.0, 0.0, 0.0, 0.0]
 
     class IMU:
         def __init__(self):
@@ -113,6 +114,10 @@ class Observations:
         self.dof_pos = None
         self.dof_vel = None
         self.actions = None
+        self.foot_force = None
+        self.motor_strength = None
+        self.rigid_object_properties = None
+        self.height_map = None
 
 
 class RL:
@@ -189,6 +194,14 @@ class RL:
                 obs_list.append(self.obs.dof_vel * self.params.dof_vel_scale)
             elif observation == "actions":
                 obs_list.append(self.obs.actions)
+            elif observation == "foot_contacts":
+                obs_list.append(self.obs.foot_force)
+            elif observation == "motor_strength":
+                obs_list.append(self.obs.motor_strength)
+            elif observation == "rigid_object_properties":
+                obs_list.append(self.obs.rigid_object_properties)
+            elif observation == "height_scan":
+                obs_list.append(self.obs.height_map)
         obs = torch.cat(obs_list, dim=-1)
         clamped_obs = torch.clamp(obs, -self.params.clip_obs, self.params.clip_obs)
         return clamped_obs
@@ -199,7 +212,7 @@ class RL:
         self.obs.gravity_vec = torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float)
         self.obs.commands = torch.zeros(1, 3, dtype=torch.float)
         # self.obs.base_quat = torch.zeros(1, 4, dtype=torch.float)
-        if self.params.framework == "isaacsim":
+        if self.params.framework == "isaacsim" or self.params.framework == "isaaclab":
             self.obs.base_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float)
         elif self.params.framework == "isaacgym":
             self.obs.base_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=torch.float)
@@ -231,7 +244,7 @@ class RL:
         return actions_scaled + self.params.default_dof_pos
 
     def QuatRotateInverse(self, q, v, framework):
-        if framework == "isaacsim":
+        if framework == "isaacsim" or framework == "isaaclab":
             q_w = q[:, 0]
             q_vec = q[:, 1:4]
         elif framework == "isaacgym":
@@ -248,7 +261,7 @@ class RL:
         return a - b + c
 
     def ReadVectorFromYaml(self, values, framework, rows, cols):
-        if framework == "isaacsim":
+        if framework == "isaacsim" or framework == "isaaclab":
             transposed_values = [0] * cols * rows
             for r in range(rows):
                 for c in range(cols):
@@ -350,7 +363,7 @@ class RL:
             config["joint_controller_names"], self.params.framework, rows, cols
         )
 
-        # self.params.cmd_vel = config["cmd_init"]
+        self.params.cmd_vel = config["cmd_init"]
 
     def CSVInit(self):
         self.csv_filename = self.params.policy_path
@@ -371,23 +384,75 @@ class RL:
             writer = csv.writer(file)
 
             header = []
-            header += [f"tau_cal_{i}" for i in range(12)]
-            header += [f"tau_est_{i}" for i in range(12)]
-            header += [f"joint_pos_{i}" for i in range(12)]
-            header += [f"joint_pos_target_{i}" for i in range(12)]
-            header += [f"joint_vel_{i}" for i in range(12)]
+            header += ["time"]
+            header += ["vel"]
+            header += ["cmd_vel"]
+            header += ["yaw"]
+            header += ["cmd_yaw"]
+            # header += [f"tau_cal_{i}" for i in range(12)]
+            # header += [f"tau_est_{i}" for i in range(12)]
+            # header += [f"joint_pos_{i}" for i in range(12)]
+            # header += [f"joint_pos_target_{i}" for i in range(12)]
+            # header += [f"joint_vel_{i}" for i in range(12)]
 
             writer.writerow(header)
 
-    def CSVLogger(self, torque, tau_est, joint_pos, joint_pos_target, joint_vel):
+    def CSVLogger(self, time, vel, cmd_vel, yaw, cmd_yaw):
         with open(self.csv_filename, "a", newline="") as file:
             writer = csv.writer(file)
 
             row = []
-            row += [torque[0][i].item() for i in range(12)]
-            row += [tau_est[0][i].item() for i in range(12)]
-            row += [joint_pos[0][i].item() for i in range(12)]
-            row += [joint_pos_target[0][i].item() for i in range(12)]
-            row += [joint_vel[0][i].item() for i in range(12)]
+            row.append(time)
+            row.append(vel)
+            row.append(cmd_vel)
+            row.append(yaw)
+            row.append(cmd_yaw)
+
+            writer.writerow(row)
+
+    # def CSVLogger(self, torque, tau_est, joint_pos, joint_pos_target, joint_vel):
+    #     with open(self.csv_filename, "a", newline="") as file:
+    #         writer = csv.writer(file)
+
+    #         row = []
+    #         row += [torque[0][i].item() for i in range(12)]
+    #         row += [tau_est[0][i].item() for i in range(12)]
+    #         row += [joint_pos[0][i].item() for i in range(12)]
+    #         row += [joint_pos_target[0][i].item() for i in range(12)]
+    #         row += [joint_vel[0][i].item() for i in range(12)]
+
+    #         writer.writerow(row)
+
+    def CONTACTInit(self):
+        self.csv_filename = self.params.policy_path
+        self.csv_filename = self.csv_filename.replace(
+            f"{self.params.model_name}", "csv"
+        )
+
+        # Uncomment these lines if need timestamp for file name
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d%H%M%S")
+        self.csv_filename += (
+            f"/{self.params.framework}_{self.params.model_name}_{timestamp}"
+        )
+
+        self.csv_filename += ".csv"
+
+        with open(self.csv_filename, "w", newline="") as file:
+            writer = csv.writer(file)
+
+            header = []
+            header += ["time"]
+            header += [f"contact_{i}" for i in range(4)]
+
+            writer.writerow(header)
+
+    def CONTACTLogger(self, time, contact):
+        with open(self.csv_filename, "a", newline="") as file:
+            writer = csv.writer(file)
+
+            row = []
+            row.append(time)
+            row += contact
 
             writer.writerow(row)

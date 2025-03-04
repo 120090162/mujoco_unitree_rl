@@ -1,20 +1,22 @@
 policy_path: "{LEGGED_GYM_ROOT_DIR}/pre_train/a1/{model_name}"
-xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/unitree_a1_gym/scene.xml"
-model_name: "model_0702.pt"
-framework: "isaacgym"
+xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/unitree_a1_sim/scene.xml"
+model_name: "policy_test.pt"
+framework: "isaaclab"
 # Total simulation time
-simulation_duration: 60.0
+# simulation_duration: 60.0
+simulation_duration: 1000.0
 # Simulation time step
-simulation_dt: 0.005
+simulation_dt: 0.005 # Need to be larger than the runtime of viewer.sync()
 viewer_dt: 0.02  # 50 fps for viewer
 # Controller update frequency (meets the requirement of simulation_dt * controll_decimation=0.02; 50Hz)
 control_decimation: 4
 rows: 4
 cols: 3
-num_obs: 45
+num_obs: 52
 num_actions: 12
-observations: ["ang_vel", "gravity_vec", "commands", "dof_pos", "dof_vel", "actions"]
-observations_history: [0, 1, 2, 3, 4, 5]
+observations: ["lin_vel", "ang_vel", "gravity_vec", "commands", "dof_pos", "dof_vel", "actions", "foot_contacts"]
+# observations_history: [0, 1, 2, 3, 4, 5]
+observations_history: []
 clip_obs: 100.0
 clip_actions_lower: [-100, -100, -100,
                       -100, -100, -100,
@@ -24,7 +26,14 @@ clip_actions_upper: [100, 100, 100,
                       100, 100, 100,
                       100, 100, 100,
                       100, 100, 100]
-
+# rl_kp: [20, 20, 20,
+#         20, 20, 20,
+#         20, 20, 20,
+#         20, 20, 20]
+# rl_kd: [0.5, 0.5, 0.5,
+#         0.5, 0.5, 0.5,
+#         0.5, 0.5, 0.5,
+#         0.5, 0.5, 0.5]
 rl_kp: [20.1, 20.1, 20.1,
         20.1, 20.1, 20.1,
         20.1, 20.1, 20.1,
@@ -33,17 +42,6 @@ rl_kd: [0.754, 0.754, 0.754,
         0.754, 0.754, 0.754,
         0.754, 0.754, 0.754,
         0.754, 0.754, 0.754]
-
-# rl_kp: [40, 40, 40,
-#         40, 40, 40,
-#         40, 40, 40,
-#         40, 40, 40]
-
-# rl_kd: [0.8, 0.8, 0.8, # 前左腿
-#         0.8, 0.8, 0.8, # 前右腿
-#         0.8, 0.8, 0.8, # 后左腿
-#         0.8, 0.8, 0.8] # 后右腿
-
 fixed_kp: [80, 80, 80,
             80, 80, 80,
             80, 80, 80,
@@ -52,8 +50,9 @@ fixed_kd: [3, 3, 3,
             3, 3, 3,
             3, 3, 3,
             3, 3, 3]
-hip_scale_reduction: 0.5
-hip_scale_reduction_indices: [0, 3, 6, 9]
+hip_scale_reduction: 1.0
+# hip_scale_reduction_indices: [0, 3, 6, 9]
+hip_scale_reduction_indices: []
 action_scale: 0.25
 action_scale_wheel: 0.0
 wheel_indices: []
@@ -61,6 +60,7 @@ lin_vel_scale: 2.0
 ang_vel_scale: 0.25
 dof_pos_scale: 1.0
 dof_vel_scale: 0.05
+# cmd_scale: [1.0, 1.0, 1.0]
 torque_limits: [33.5, 33.5, 33.5,
                 33.5, 33.5, 33.5,
                 33.5, 33.5, 33.5,
@@ -73,4 +73,4 @@ joint_controller_names: ["FL_hip_controller", "FL_thigh_controller", "FL_calf_co
                           "FR_hip_controller", "FR_thigh_controller", "FR_calf_controller",
                           "RL_hip_controller", "RL_thigh_controller", "RL_calf_controller",
                           "RR_hip_controller", "RR_thigh_controller", "RR_calf_controller"]
-cmd_init: [0.5, 0, 0]
+cmd_init: [0.3, 0, 0]

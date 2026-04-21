@@ -5,7 +5,7 @@ import csv
 from enum import Enum, auto
 import numpy as np
 
-LEGGED_GYM_ROOT_DIR = "/home/joshua/WORK/test_genesis/mujoco_unitree_rl"
+LEGGED_GYM_ROOT_DIR = "/home/joshua/WORK/TEMP/mujoco_unitree_rl"
 
 
 class LOGGER:
